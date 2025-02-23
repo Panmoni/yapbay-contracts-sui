@@ -1,0 +1,30 @@
+flowchart TD
+    A["Start: Seller calls create_escrow (set trade_id, deadlines, sequential flag, and (if sequential) the pre-created sequential escrow address)"]
+    A --> B["State: Created"]
+    B --> C["Seller calls fund_escrow (USDC deposited, amount ≤ 100)"]
+    C --> D["State: Funded"]
+    
+    D --> E{"Has Buyer confirmed fiat payment? (mark_fiat_paid within 30 minutes)"}
+    E -- "No: deadline expires" --> F["Cancellation allowed: Seller (or Arbitrator auto_cancel) cancels escrow"]
+    F --> G["State: Cancelled"]
+    
+    E -- "Yes: Buyer calls mark_fiat_paid" --> H["fiat_paid flag set (State remains Funded)"]
+    
+    H --> K["Seller calls release_escrow"]
+    K --> L{"Is sequential flag true?"}
+    L -- "No: standard escrow" --> M["Funds transferred directly to Buyer"]
+    L -- "Yes: chained remittance" --> O["Funds auto-transferred to pre-defined sequential escrow (destination: sequential_escrow_address)"]
+    M --> N["State: Released"]
+    O --> N
+    
+    H --> P["Option: Open Dispute (by Buyer or Seller)"]
+    P --> Q["State: Disputed"]
+    Q --> R{"Arbitrator's Decision"}
+    R -- "True: release funds" --> S["Funds released (direct or sequential)"]
+    S --> T["State: Resolved"]
+    R -- "False: cancel escrow" --> U["Escrow cancelled; funds returned to Seller"]
+    U --> T
+    
+    B --> V{"Is deposit_deadline (15 min) exceeded before funding?"}
+    V -- "Yes" --> W["Auto-cancel via API or Arbitrator"]
+    W --> G
