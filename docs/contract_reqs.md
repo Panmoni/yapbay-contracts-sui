@@ -366,3 +366,9 @@ For now, the frontend and/or API will assist the Buyer in verifying that the `se
 ## 11. Summary
 
 This document outlines the requirements for the YapBay Sui Escrow Contract. The design ensures a secure and auditable on-chain escrow mechanism using USDC on the Sui testnet. With support for sequential trades, enforcement of dual deadlines and robust dispute resolution, this system guarantees that funds remain under secure on-chain custody until all agreed conditions are met. The additional details on error handling, extensive testing strategies and a future roadmap for sponsored transactions demonstrate our commitment to developing a resilient and user-friendly escrow solution.
+
+## Addendum
+
+Here is the escrow flow diagram.
+
+![Escrow Flow Diagram](escrow_flow.svg)
