@@ -83,7 +83,7 @@ The escrow contract operates via the following primary functions:
    - Either party can open a dispute after fiat is confirmed.
    - The Arbitrator makes the final decision to either release the funds or cancel the escrow.
 
-Get more details in the [contract requirements document(docs/contract_reqs.md)].
+Get more details in the [contract requirements document](docs/contract_reqs.md).
 
 ### Escrow Flow Overview
 
