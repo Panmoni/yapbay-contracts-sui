@@ -3,6 +3,7 @@
 // both P2P and chained remittance trades using USDC on the Sui blockchain.
 // This module enforces rules for deposit, fiat confirmation, release, cancellation,
 // and dispute handling as specified in the contract requirements document.
+// This module contemplates a 1% fee that is added to the escrow principal amount for the seller.
 
 module yapbay::sequential_escrow {
 
@@ -29,10 +30,15 @@ module yapbay::sequential_escrow {
     const E105: u64 = 105; // Invalid state transition
     const E106: u64 = 106; // Missing sequential escrow address
     const E107: u64 = 107; // Already in terminal state
+    const E108: u64 = 108; // Fee calculation error
+    const E109: u64 = 109; // Insufficient funds to cover principal and fee
 
     // === CONSTANTS ===
     // Maximum amount allowed (100 USDC) as specified in section 1
     const MAX_AMOUNT: u64 = 100_000_000; // 6 decimals for USDC
+    
+    // Fee percentage (1%) expressed as basis points
+    const FEE_BASIS_POINTS: u64 = 100; // 1% = 100 basis points
     
     // Deadlines as specified in section 1
     const DEPOSIT_DEADLINE_MINUTES: u64 = 15; // 15 minutes from order initiation
@@ -62,6 +68,7 @@ module yapbay::sequential_escrow {
         buyer: address,
         arbitrator: address,
         amount: u64,
+        fee: u64,         // Fee amount (1% of principal)
         deposit_deadline: u64,
         fiat_deadline: u64,
         state: EscrowState,
@@ -82,6 +89,7 @@ module yapbay::sequential_escrow {
         buyer: address,
         arbitrator: address,
         amount: u64,
+        fee: u64,         // Fee amount
         deposit_deadline: u64,
         fiat_deadline: u64,
         sequential: bool,
@@ -94,6 +102,7 @@ module yapbay::sequential_escrow {
         escrow_id: u64,
         trade_id: u64,
         amount: u64,
+        fee: u64,         // Fee amount
         counter: u64,
         timestamp: u64
     }
@@ -111,6 +120,7 @@ module yapbay::sequential_escrow {
         trade_id: u64,
         buyer: address,
         amount: u64,
+        fee: u64,         // Fee amount
         counter: u64,
         timestamp: u64,
         destination: String // "direct to buyer" or "sequential escrow"
@@ -124,6 +134,7 @@ module yapbay::sequential_escrow {
         trade_id: u64,
         seller: address,
         amount: u64,
+        fee: u64,         // Fee amount
         counter: u64,
         timestamp: u64
     }
@@ -141,6 +152,7 @@ module yapbay::sequential_escrow {
         escrow_id: u64,
         trade_id: u64,
         decision: bool, // true = release to buyer, false = return to seller
+        fee: u64,       // Fee amount
         counter: u64,
         timestamp: u64
     }
@@ -178,6 +190,10 @@ module yapbay::sequential_escrow {
             assert!(option::is_some(&sequential_escrow_address), E106);
         };
         
+        // Calculate fee (1% of principal amount)
+        let fee = (amount * FEE_BASIS_POINTS) / 10000;
+        assert!(fee > 0, E108); // Ensure fee calculation is valid
+        
         // Calculate deadlines (section 1 requirements)
         let current_time = clock::timestamp_ms(clock);
         let deposit_deadline = current_time + (DEPOSIT_DEADLINE_MINUTES * 60 * 1000);
@@ -197,6 +213,7 @@ module yapbay::sequential_escrow {
             buyer,
             arbitrator: ARBITRATOR_ADDRESS, // Fixed arbitrator from constants
             amount,
+            fee,
             deposit_deadline,
             fiat_deadline,
             state: EscrowState::Created,
@@ -216,6 +233,7 @@ module yapbay::sequential_escrow {
             buyer,
             arbitrator: ARBITRATOR_ADDRESS,
             amount,
+            fee,
             deposit_deadline,
             fiat_deadline,
             sequential,
@@ -247,8 +265,8 @@ module yapbay::sequential_escrow {
         let current_time = clock::timestamp_ms(clock);
         assert!(current_time <= escrow.deposit_deadline, E103);
         
-        // Validate amount matches exactly (section 4.B preconditions)
-        assert!(coin::value(&coin) == escrow.amount, E100);
+        // Validate amount matches exactly (principal + fee)
+        assert!(coin::value(&coin) == escrow.amount + escrow.fee, E109);
         
         // Ensure no funds are already present (safe approach)
         assert!(option::is_none(&escrow.funds), E105);
@@ -270,6 +288,7 @@ module yapbay::sequential_escrow {
             escrow_id: escrow.escrow_id,
             trade_id: escrow.trade_id,
             amount: escrow.amount,
+            fee: escrow.fee,
             counter: escrow.counter,
             timestamp: current_time
         });
@@ -356,15 +375,21 @@ module yapbay::sequential_escrow {
             assert!(option::is_some(&escrow.sequential_escrow_address), E106);
         };
 
-        let funds = option::extract(&mut escrow.funds);
+        let mut mut_funds = option::extract(&mut escrow.funds);
         let current_time = clock::timestamp_ms(clock);
         escrow.counter = escrow.counter + 1;
+        
+        // Split the funds: principal amount and fee
+        let fee_coin = coin::split(&mut mut_funds, escrow.fee, ctx);
+        
+        // Transfer fee to arbitrator
+        transfer::public_transfer(fee_coin, escrow.arbitrator);
         
         // Handle fund transfer based on sequential flag (section 4.D postconditions)
         if (escrow.sequential) {
             // For sequential trades, transfer to the pre-defined sequential escrow
             let seq_address = option::extract(&mut escrow.sequential_escrow_address);
-            transfer::public_transfer(funds, seq_address);
+            transfer::public_transfer(mut_funds, seq_address);
 
             // For sequential escrows
             // post-MVP replace with u8 and simple codes
@@ -376,6 +401,7 @@ module yapbay::sequential_escrow {
                 trade_id: escrow.trade_id,
                 buyer: escrow.buyer,
                 amount: escrow.amount,
+                fee: escrow.fee,
                 counter: escrow.counter,
                 timestamp: current_time,
                 destination: destination_string
@@ -383,7 +409,7 @@ module yapbay::sequential_escrow {
 
         } else {
             // For standard trades, transfer directly to buyer
-            transfer::public_transfer(funds, escrow.buyer);
+            transfer::public_transfer(mut_funds, escrow.buyer);
 
             event::emit(EscrowReleased {
                 object_id: object::uid_to_inner(&escrow.id),
@@ -391,6 +417,7 @@ module yapbay::sequential_escrow {
                 trade_id: escrow.trade_id,
                 buyer: escrow.buyer,
                 amount: escrow.amount,
+                fee: escrow.fee,
                 counter: escrow.counter,
                 timestamp: current_time,
                 destination: string::utf8(b"direct to buyer")
@@ -445,6 +472,7 @@ module yapbay::sequential_escrow {
             trade_id: escrow.trade_id,
             seller: escrow.seller,
             amount: escrow.amount,
+            fee: escrow.fee,
             counter: escrow.counter,
             timestamp: current_time
         });
@@ -512,10 +540,17 @@ module yapbay::sequential_escrow {
         let counter_copy = escrow.counter;
         
         // Extract funds for transfer based on arbitrator decision
-        let funds = option::extract(&mut escrow.funds);
+        let mut funds = option::extract(&mut escrow.funds);
         
         if (decision) {
-            // Release funds based on sequential flag (section 4.F.2 postconditions)
+            // Decision is to release to buyer
+            // Split the funds: principal amount and fee
+            let fee_coin = coin::split(&mut funds, escrow.fee, ctx);
+            
+            // Transfer fee to arbitrator
+            transfer::public_transfer(fee_coin, escrow.arbitrator);
+            
+            // Release principal based on sequential flag (section 4.F.2 postconditions)
             if (escrow.sequential) {
                 assert!(option::is_some(&escrow.sequential_escrow_address), E106);
                 let seq_address = option::extract(&mut escrow.sequential_escrow_address);
@@ -524,7 +559,8 @@ module yapbay::sequential_escrow {
                 transfer::public_transfer(funds, escrow.buyer);
             };
         } else {
-            // Return funds to seller (section 4.F.2 postconditions)
+            // Decision is to return to seller
+            // Seller keeps both principal and fee
             transfer::public_transfer(funds, escrow.seller);
         };
         
@@ -537,6 +573,7 @@ module yapbay::sequential_escrow {
             escrow_id: escrow.escrow_id,
             trade_id: escrow.trade_id,
             decision,
+            fee: escrow.fee,
             counter: escrow.counter,
             timestamp: current_time
         });
@@ -590,6 +627,7 @@ module yapbay::sequential_escrow {
             trade_id: escrow.trade_id,
             seller: escrow.seller,
             amount: escrow.amount,
+            fee: escrow.fee,
             counter: escrow.counter,
             timestamp: current_time
         });
@@ -606,6 +644,7 @@ module yapbay::sequential_escrow {
         address, // seller
         address, // buyer
         u64,    // amount
+        u64,    // fee
         u64,    // deposit_deadline
         u64,    // fiat_deadline
         bool,   // sequential
@@ -617,6 +656,7 @@ module yapbay::sequential_escrow {
             escrow.seller,
             escrow.buyer,
             escrow.amount,
+            escrow.fee,
             escrow.deposit_deadline,
             escrow.fiat_deadline,
             escrow.sequential,
@@ -658,6 +698,9 @@ module yapbay::sequential_escrow {
         sequential: bool,
         ctx: &mut TxContext
     ): Escrow {
+        // Calculate fee (1% of principal amount)
+        let fee = (amount * FEE_BASIS_POINTS) / 10000;
+        
         Escrow {
             id: object::new(ctx),
             escrow_id: 1000,
@@ -666,6 +709,7 @@ module yapbay::sequential_escrow {
             buyer,
             arbitrator: ARBITRATOR_ADDRESS,
             amount,
+            fee,
             deposit_deadline: 0,
             fiat_deadline: 0,
             state: EscrowState::Created,
